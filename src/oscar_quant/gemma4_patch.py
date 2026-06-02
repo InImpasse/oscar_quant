@@ -439,6 +439,7 @@ def _packed_prefill_cache(
 
     runtime: _PackedRuntimeConfig = getattr(module, _PACKED_CONFIG_ATTR)
     batch_size, seq_len, nheads_k, head_dim = key_states.shape
+    _validate_packed_kernel_shape(module, key_states, runtime)
     residual_len = seq_len % runtime.residual_evict_size
     pack_len = seq_len - residual_len
     pack_physical_len = _round_up_pack_len(pack_len, runtime) if pack_len > 0 else 0
@@ -494,6 +495,7 @@ def _packed_decode_attention(
 
     runtime: _PackedRuntimeConfig = getattr(module, _PACKED_CONFIG_ATTR)
     batch_size, _, _, head_dim = query_states.shape
+    _validate_packed_kernel_shape(module, query_states, runtime)
     device = query_states.device
     dtype = query_states.dtype
     k_pack, k_params, v_pack, v_params = cache.update_pack(None, None, None, None, layer_idx)
@@ -561,6 +563,7 @@ def _pack_block(
 
     runtime: _PackedRuntimeConfig = getattr(module, _PACKED_CONFIG_ATTR)
     logical_len = int(key_states.shape[1])
+    _validate_packed_kernel_shape(module, key_states, runtime)
     batch_size, _, nheads_k, head_dim = key_states.shape
     physical_len = _round_up_pack_len(logical_len, runtime)
     pack_num = runtime.pack_num
@@ -646,6 +649,21 @@ def _ensure_decode_work_buffers(
 ) -> None:
     if not all(hasattr(module, name) for name in ("k_pack_new", "k_params_new", "v_pack_new", "v_params_new")):
         _allocate_decode_work_buffers(module, batch_size, nheads_k, head_dim, device, runtime)
+
+
+def _validate_packed_kernel_shape(
+    module: torch.nn.Module,
+    states: torch.Tensor,
+    runtime: _PackedRuntimeConfig,
+) -> None:
+    head_dim = int(states.shape[-1])
+    if head_dim > 256:
+        raise NotImplementedError(
+            "Gemma4 packed KV cache cannot use the current OScaR CUDA kernel for "
+            f"layer_idx={module.layer_idx}: head_dim={head_dim}, shape={tuple(states.shape)}, "
+            f"num_bits={runtime.num_bits}. The upstream packed kernel reports support only "
+            "for attention head dimensions up to 256."
+        )
 
 
 def _round_up_pack_len(seqlen: int, runtime: _PackedRuntimeConfig) -> int:
