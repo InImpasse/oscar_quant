@@ -109,7 +109,7 @@ def main() -> int:
         torch.cuda.empty_cache()
     except RuntimeError as exc:
         status = "oom" if "out of memory" in str(exc).lower() else "error"
-        result.update({"status": status, "error": str(exc)})
+        result.update({"status": status, "error": str(exc), "traceback": traceback.format_exc()})
         if status == "oom" and torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception as exc:
@@ -160,6 +160,8 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
     assets = load_assets(args.profile, model_id, args.trust_remote_code)
     tokenizer = tokenizer_from_assets(assets)
     model = load_model(profile["auto_model"], model_id, load_dtype, args)
+    if args.kv_cache_mode == "packed":
+        force_eager_attention(model)
     model.eval()
 
     patched_layers = 0
@@ -269,6 +271,13 @@ def load_model(auto_model: str, model_id: str, dtype: torch.dtype, args: argpars
         attn_implementation=args.attn_implementation,
         trust_remote_code=args.trust_remote_code,
     )
+
+
+def force_eager_attention(model: torch.nn.Module) -> None:
+    """Force eager attention flags on nested configs for packed validation."""
+    for config in (getattr(model, "config", None), getattr(getattr(model, "config", None), "text_config", None)):
+        if config is not None and hasattr(config, "_attn_implementation"):
+            setattr(config, "_attn_implementation", "eager")
 
 
 def build_prompt(tokenizer: Any, target_tokens: int) -> str:
