@@ -32,6 +32,13 @@ Runtime OScaR:
 This returns an **in-memory patched model object**. It does not create a
 standalone `.safetensors` file.
 
+Important: the current Granite and Gemma4 runtime patch uses upstream OScaR's
+`quantize_prefill(...)` / `quantize_kv_cache(...)` path. That path fake-quantizes
+and dequantizes back into floating-point cache tensors, so it can simulate
+quantization error without physically packing KV cache storage. Use the
+benchmark's `kv_cache_observed_gib` and `kv_cache_storage_note` fields to verify
+whether a run changed actual tensor storage.
+
 TorchAO `.safetensors` export:
 
 1. Loads the original model weights.
@@ -358,7 +365,104 @@ oscar-baseline \
 ```
 
 The command prints JSON with latency, generated tokens, tokens/sec, generated
-text, and CUDA peak memory when CUDA is available.
+text, CUDA peak memory when CUDA is available, and OScaR cache storage
+diagnostics. If `kv_cache_storage_note` says physical tensor storage is
+unchanged, the run is using fake quantize/dequantize rather than packed KV cache
+storage.
+
+Use `--kv-cache-mode` to make the intended cache path explicit:
+
+```bash
+oscar-baseline \
+  --prompt "The capital of France is" \
+  --max-new-tokens 64 \
+  --k-bits 2 \
+  --v-bits 2 \
+  --kv-cache-mode fake
+```
+
+Current Granite/Gemma4 support is `fake` only. Passing `--kv-cache-mode packed`
+fails fast because this repo does not yet contain a model-family-specific packed
+KV cache implementation for Granite or Gemma4.
+
+## Remote Long-Context Validation
+
+On the A800 machine, install the package and runtime dependency first:
+
+```bash
+python -m pip install -e ".[artifact]"
+bash scripts/install_oscar_dependency.sh
+```
+
+Download the supported model snapshots into a local Hugging Face cache:
+
+```bash
+python scripts/download_models.py --cache-dir checkpoints/huggingface
+```
+
+If Gemma4 access is gated in your Hugging Face account, login first or pass a
+token:
+
+```bash
+huggingface-cli login
+# or
+python scripts/download_models.py --cache-dir checkpoints/huggingface --token "$HF_TOKEN"
+```
+
+Run the default long-context matrix for Granite and Gemma4 at 1K, 2K, and 8K
+tokens:
+
+```bash
+./scripts/run_long_context_matrix.sh
+```
+
+The default matrix runs:
+
+- Baseline: `bf16`, `fp16`
+- OScaR fake KV path: `int8`, `int4`, `int2`
+- Contexts: `1024`, `2048`, `8192`
+- New tokens: `32`
+
+Customize the run with environment variables:
+
+```bash
+CONTEXTS="1024 2048 8192" \
+PROFILES="granite-4.0-1b-base gemma4-e2b" \
+BASELINE_PRECISIONS="bf16 fp16" \
+OSCAR_PRECISIONS="int8 int4 int2" \
+KV_CACHE_MODE="fake" \
+MAX_NEW_TOKENS=32 \
+RESULT_ROOT="results/a800_long_context" \
+./scripts/run_long_context_matrix.sh
+```
+
+Run one case directly:
+
+```bash
+PYTHONPATH=src python scripts/run_long_context_case.py \
+  --profile granite-4.0-1b-base \
+  --run-type oscar \
+  --precision int2 \
+  --kv-cache-mode fake \
+  --context-target 8192 \
+  --max-new-tokens 32 \
+  --output-json results/long_context/raw/granite_oscar_int2_fake_8192.json
+```
+
+The matrix writes raw JSON under `results/long_context/raw/` and a CSV summary
+at `results/long_context/summary.csv`. Important fields:
+
+- `nvidia_smi_peak_used_gib`: process-visible GPU peak from `nvidia-smi`.
+- `torch_peak_allocated_gib`: PyTorch allocated peak during generation.
+- `kv_theoretical_bf16_gib`: formula-based bf16/fp16 KV size.
+- `kv_theoretical_quantized_gib`: formula-based int8/int4/int2 KV size.
+- `kv_observed_tensor_gib`: actual OScaR cache tensor bytes observed by the
+  runtime patch.
+- `kv_cache_storage_note`: tells whether cache tensor dtype/shape/bytes changed.
+
+For the current fake path, expect `kv_cache_storage_note` to report that physical
+cache tensor storage is unchanged. That means the run simulated quantization
+error but did not physically pack the KV cache.
 
 ## Important CLI Options
 
@@ -404,7 +508,11 @@ src/oscar_quant/
   schemas.py         Pydantic benchmark result schemas
 
 scripts/
+  download_models.py
   install_oscar_dependency.sh
+  run_long_context_case.py
+  run_long_context_matrix.sh
+  summarize_long_context_results.py
 
 tests/
   test_config.py
