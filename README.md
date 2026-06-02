@@ -458,11 +458,16 @@ at `results/long_context/summary.csv`. Important fields:
 - `kv_theoretical_quantized_gib`: formula-based int8/int4/int2 KV size.
 - `kv_observed_tensor_gib`: actual OScaR cache tensor bytes observed by the
   runtime patch.
+- `kv_physical_compression_ratio`: actual before/after tensor storage ratio for
+  the cache layers tracked by the runtime patch. This is the field to use when
+  deciding whether KV storage was physically compressed.
 - `kv_cache_storage_note`: tells whether cache tensor dtype/shape/bytes changed.
 
 For the current fake path, expect `kv_cache_storage_note` to report that physical
-cache tensor storage is unchanged. That means the run simulated quantization
-error but did not physically pack the KV cache.
+cache tensor storage is unchanged and `kv_physical_compression_ratio` to be
+`1.0`. That means the run simulated quantization error but did not physically
+pack the KV cache. The `kv_theoretical_*` fields are estimates for what a real
+packed path would target; they are not measured memory savings.
 
 ## Important CLI Options
 

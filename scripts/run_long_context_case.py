@@ -206,7 +206,12 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
         "torch_peak_allocated_gib": cuda_gib(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None,
         "torch_peak_reserved_gib": cuda_gib(torch.cuda.max_memory_reserved()) if torch.cuda.is_available() else None,
         "nvidia_smi_peak_used_gib": round((monitor.peak_mib or 0) / 1024, 6) if monitor.peak_mib is not None else None,
-        "kv_observed_tensor_gib": kv_summary["gib"],
+        "kv_observed_tensor_gib": kv_summary["after_gib"],
+        "kv_cache_before_tensor_gib": kv_summary["before_gib"],
+        "kv_cache_after_tensor_gib": kv_summary["after_gib"],
+        "kv_physical_compression_ratio": kv_summary["compression_ratio"],
+        "kv_physical_changed_layers": kv_summary["changed_layers"],
+        "kv_physical_tracked_layers": kv_summary["tracked_layers"],
         "kv_cache_storage_note": kv_summary["note"],
         **theoretical,
     }
@@ -298,22 +303,42 @@ def oscar_cache_summary(model: torch.nn.Module) -> dict[str, Any]:
         if hasattr(module, OSCAR_CACHE_SUMMARY_ATTR)
     ]
     if not summaries:
-        return {"gib": None, "note": None}
-    observed_bytes = sum(int(summary["after"]["bytes"]) for summary in summaries)
+        return {
+            "before_gib": None,
+            "after_gib": None,
+            "compression_ratio": None,
+            "changed_layers": None,
+            "tracked_layers": 0,
+            "note": None,
+        }
+    before_bytes = sum(int(summary["before"]["bytes"]) for summary in summaries)
+    after_bytes = sum(int(summary["after"]["bytes"]) for summary in summaries)
     changed_layers = sum(
         1
         for summary in summaries
         if summary["physical_bytes_changed"] or summary["dtype_or_shape_changed"]
     )
+    ratio = round(before_bytes / after_bytes, 6) if after_bytes else None
     note = (
-        f"{changed_layers}/{len(summaries)} layers changed physical cache tensor storage"
+        (
+            f"{changed_layers}/{len(summaries)} layers changed physical cache tensor storage; "
+            f"observed physical KV compression ratio {ratio}x"
+        )
         if changed_layers
         else (
             "0/{layers} layers changed physical cache tensor storage; "
-            "fake quantize/dequantize kept fp cache tensors"
+            "fake quantize/dequantize kept fp cache tensors; "
+            "observed physical KV compression ratio 1.0x"
         ).format(layers=len(summaries))
     )
-    return {"gib": round(observed_bytes / 1024**3, 6), "note": note}
+    return {
+        "before_gib": round(before_bytes / 1024**3, 6),
+        "after_gib": round(after_bytes / 1024**3, 6),
+        "compression_ratio": ratio,
+        "changed_layers": changed_layers,
+        "tracked_layers": len(summaries),
+        "note": note,
+    }
 
 
 def theoretical_kv_gib(model: torch.nn.Module, tokens: int, args: argparse.Namespace) -> dict[str, float | None]:
