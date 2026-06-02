@@ -39,6 +39,8 @@ class BenchmarkRun(BaseModel):
     text: str
     cuda_peak_allocated_gib: Optional[float] = Field(default=None, ge=0)
     patched_attention_layers: Optional[int] = Field(default=None, ge=0)
+    kv_cache_observed_gib: Optional[float] = Field(default=None, ge=0)
+    kv_cache_storage_note: Optional[str] = None
 
 
 class BenchmarkReport(BaseModel):
@@ -65,4 +67,5 @@ class BenchmarkReport(BaseModel):
     prompt_tokens: int = Field(ge=0)
     k_bits: int = Field(ge=2)
     v_bits: int = Field(ge=2)
+    kv_cache_mode: str = "fake"
     runs: List[BenchmarkRun]

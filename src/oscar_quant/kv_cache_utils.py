@@ -19,6 +19,7 @@ import torch
 from .config import OscarKVConfig
 
 OSCAR_CONFIG_ATTR = "_oscar_quant_config"
+OSCAR_CACHE_SUMMARY_ATTR = "_oscar_quant_cache_summary"
 
 
 def ensure_oscar_quantizer(module: torch.nn.Module) -> None:
@@ -157,7 +158,7 @@ def quantize_layer_cache_after_attention(
     cache: Any,
     layer_idx: int,
     q_len: int,
-) -> None:
+) -> dict[str, Any] | None:
     """Quantize one layer's stored KV cache after attention has consumed it.
 
     What it does:
@@ -176,9 +177,10 @@ def quantize_layer_cache_after_attention(
         math has run.
     """
     if not hasattr(module, "quarot_quantizer"):
-        return
+        return None
 
     cache_key_states, cache_value_states = get_layer_cache(cache, layer_idx)
+    before = describe_cache_tensors(cache_key_states, cache_value_states)
     if q_len > 1:
         cache_key_states, cache_value_states = module.quarot_quantizer.quantize_prefill(
             cache_key_states,
@@ -189,7 +191,48 @@ def quantize_layer_cache_after_attention(
             cache_key_states,
             cache_value_states,
         )
+    after = describe_cache_tensors(cache_key_states, cache_value_states)
     set_layer_cache(cache, layer_idx, cache_key_states, cache_value_states)
+
+    summary = {
+        "layer_idx": layer_idx,
+        "q_len": q_len,
+        "mode": "prefill" if q_len > 1 else "decode",
+        "before": before,
+        "after": after,
+        "physical_bytes_changed": before["bytes"] != after["bytes"],
+        "dtype_or_shape_changed": (
+            before["key_dtype"] != after["key_dtype"]
+            or before["value_dtype"] != after["value_dtype"]
+            or before["key_shape"] != after["key_shape"]
+            or before["value_shape"] != after["value_shape"]
+        ),
+    }
+    summary["storage_note"] = (
+        "physical cache tensor storage changed"
+        if summary["physical_bytes_changed"] or summary["dtype_or_shape_changed"]
+        else "physical cache tensor storage unchanged; upstream path is fake quantize/dequantize"
+    )
+    setattr(module, OSCAR_CACHE_SUMMARY_ATTR, summary)
+    return summary
+
+
+def describe_cache_tensors(key_states: torch.Tensor, value_states: torch.Tensor) -> dict[str, Any]:
+    """Return physical storage metadata for one layer's cached K/V tensors."""
+    return {
+        "bytes": tensor_nbytes(key_states) + tensor_nbytes(value_states),
+        "key_dtype": str(key_states.dtype),
+        "value_dtype": str(value_states.dtype),
+        "key_shape": tuple(int(dim) for dim in key_states.shape),
+        "value_shape": tuple(int(dim) for dim in value_states.shape),
+        "key_bytes": tensor_nbytes(key_states),
+        "value_bytes": tensor_nbytes(value_states),
+    }
+
+
+def tensor_nbytes(tensor: torch.Tensor) -> int:
+    """Return the physical bytes occupied by a tensor's visible elements."""
+    return int(tensor.numel() * tensor.element_size())
 
 
 def get_layer_cache(cache: Any, layer_idx: int) -> tuple[torch.Tensor, torch.Tensor]:

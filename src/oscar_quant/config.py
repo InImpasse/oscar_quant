@@ -9,8 +9,11 @@ schema instead of several lightly checked dictionaries.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+KVCacheMode = Literal["fake", "packed"]
 
 
 class OscarKVConfig(BaseModel):
@@ -48,6 +51,7 @@ class OscarKVConfig(BaseModel):
     k_norm_factoring: bool = True
     use_hadamard: bool = True
     offline_v_hadamard: bool = True
+    kv_cache_mode: KVCacheMode = "fake"
 
     def as_namespace(self) -> SimpleNamespace:
         """Return a namespace shaped like upstream OScaR helper arguments.
@@ -66,3 +70,14 @@ class OscarKVConfig(BaseModel):
             Pydantic-specific APIs into the integration boundary.
         """
         return SimpleNamespace(**self.model_dump())
+
+
+def validate_runtime_kv_cache_mode(mode: KVCacheMode, profile: str) -> None:
+    """Fail early when a requested KV-cache storage mode is not implemented."""
+    if mode == "fake":
+        return
+    raise NotImplementedError(
+        f"Packed KV cache mode is not implemented for profile {profile!r} in this repo. "
+        "The current Granite/Gemma4 runtime path supports only fake quantize/dequantize. "
+        "Use --kv-cache-mode fake, or add a model-family-specific packed cache implementation."
+    )

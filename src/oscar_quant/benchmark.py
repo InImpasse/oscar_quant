@@ -17,7 +17,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .cli import _dtype, _oscar_config
+from .config import validate_runtime_kv_cache_mode
 from .granite_patch import apply_oscar_to_granite
+from .kv_cache_utils import OSCAR_CACHE_SUMMARY_ATTR
 from .models import DEFAULT_GRANITE_MODEL_ID
 from .schemas import BenchmarkReport, BenchmarkRun
 
@@ -41,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         logs and compared across hardware, prompts, and model revisions.
     """
     args = _parse_args(argv)
+    validate_runtime_kv_cache_mode(args.kv_cache_mode, "granite-4.0-1b-base")
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_id,
@@ -77,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         prompt_tokens=int(inputs["input_ids"].shape[-1]),
         k_bits=args.k_bits,
         v_bits=args.v_bits,
+        kv_cache_mode=args.kv_cache_mode,
         runs=runs,
     )
     print(report.model_dump_json(indent=2))
@@ -125,6 +129,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--disable-k-norm-factoring", action="store_true")
     parser.add_argument("--disable-hadamard", action="store_true")
     parser.add_argument("--disable-offline-v-hadamard", action="store_true")
+    parser.add_argument(
+        "--kv-cache-mode",
+        choices=("fake", "packed"),
+        default="fake",
+        help=(
+            "KV-cache storage mode. Current Granite benchmark supports only fake "
+            "quantize/dequantize; packed fails fast until implemented."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -239,6 +252,7 @@ def _timed_generate(
 
     new_tokens = generated[:, inputs["input_ids"].shape[-1] :]
     new_token_count = int(new_tokens.shape[-1])
+    cache_summary = _oscar_cache_summary(model)
     return BenchmarkRun(
         label=label,
         elapsed_seconds=round(elapsed_seconds, 6),
@@ -248,7 +262,36 @@ def _timed_generate(
         cuda_peak_allocated_gib=round(torch.cuda.max_memory_allocated() / 1024**3, 3)
         if torch.cuda.is_available()
         else None,
+        kv_cache_observed_gib=cache_summary["gib"],
+        kv_cache_storage_note=cache_summary["note"],
     )
+
+
+def _oscar_cache_summary(model: torch.nn.Module) -> dict[str, Any]:
+    """Summarize physical KV-cache tensor storage recorded by OScaR patches."""
+    summaries = [
+        getattr(module, OSCAR_CACHE_SUMMARY_ATTR)
+        for module in model.modules()
+        if hasattr(module, OSCAR_CACHE_SUMMARY_ATTR)
+    ]
+    if not summaries:
+        return {"gib": None, "note": None}
+
+    observed_bytes = sum(int(summary["after"]["bytes"]) for summary in summaries)
+    changed_layers = sum(
+        1
+        for summary in summaries
+        if summary["physical_bytes_changed"] or summary["dtype_or_shape_changed"]
+    )
+    note = (
+        f"{changed_layers}/{len(summaries)} layers changed physical cache tensor storage"
+        if changed_layers
+        else (
+            "0/{layers} layers changed physical cache tensor storage; "
+            "OScaR upstream fake quantize/dequantize keeps fp cache tensors"
+        ).format(layers=len(summaries))
+    )
+    return {"gib": round(observed_bytes / 1024**3, 6), "note": note}
 
 
 if __name__ == "__main__":

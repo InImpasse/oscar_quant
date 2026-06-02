@@ -14,7 +14,7 @@ from oscar_quant.artifact import (
     QuantizedArtifactReport,
     SafetensorFile,
 )
-from oscar_quant.config import OscarKVConfig
+from oscar_quant.config import OscarKVConfig, validate_runtime_kv_cache_mode
 from oscar_quant.loader import OscarPatchedGemma4Model, OscarPatchedGraniteModel
 from oscar_quant.models import (
     DEFAULT_GEMMA4_E2B_MODEL_ID,
@@ -38,6 +38,7 @@ def test_default_config_validates_and_exports_namespace():
     assert namespace.v_bits == 2
     assert namespace.k_groupsize == 32
     assert namespace.k_norm_factoring is True
+    assert namespace.kv_cache_mode == "fake"
     assert config.model_dump()["v_groupsize"] == 32
 
 
@@ -75,6 +76,7 @@ def test_benchmark_report_serializes_as_json():
         prompt_tokens=5,
         k_bits=2,
         v_bits=2,
+        kv_cache_mode="fake",
         runs=[
             BenchmarkRun(
                 label="baseline",
@@ -82,6 +84,8 @@ def test_benchmark_report_serializes_as_json():
                 new_tokens=10,
                 tokens_per_second=8.0,
                 text=" Paris.",
+                kv_cache_observed_gib=0.125,
+                kv_cache_storage_note="0/24 layers changed physical cache tensor storage",
             )
         ],
     )
@@ -89,7 +93,10 @@ def test_benchmark_report_serializes_as_json():
     payload = json.loads(report.model_dump_json())
 
     assert payload["model_id"] == DEFAULT_GRANITE_MODEL_ID
+    assert payload["kv_cache_mode"] == "fake"
     assert payload["runs"][0]["label"] == "baseline"
+    assert payload["runs"][0]["kv_cache_observed_gib"] == 0.125
+    assert "physical cache tensor storage" in payload["runs"][0]["kv_cache_storage_note"]
 
 
 def test_patched_granite_wrapper_identifies_model_output():
@@ -173,6 +180,17 @@ def test_kv_cache_utils_is_the_shared_helper_module():
 
     assert hasattr(kv_cache_utils, "ensure_oscar_quantizer")
     assert hasattr(kv_cache_utils, "quantize_layer_cache_after_attention")
+    assert hasattr(kv_cache_utils, "OSCAR_CACHE_SUMMARY_ATTR")
+
+
+def test_packed_kv_cache_mode_fails_until_model_family_support_exists():
+    """Verify packed mode is explicit instead of silently falling back to fake mode."""
+    try:
+        validate_runtime_kv_cache_mode("packed", "granite-4.0-1b-base")
+    except NotImplementedError as exc:
+        assert "supports only fake" in str(exc)
+    else:
+        raise AssertionError("Expected packed KV cache mode to fail fast")
 
 
 def test_quantized_artifact_report_lists_safetensor_files():

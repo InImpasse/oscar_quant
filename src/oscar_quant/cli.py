@@ -14,7 +14,7 @@ from typing import Any
 
 import torch
 
-from .config import OscarKVConfig
+from .config import OscarKVConfig, validate_runtime_kv_cache_mode
 from .loader import load_oscar_patched_gemma4, load_oscar_patched_granite
 from .models import DEFAULT_GEMMA4_E2B_MODEL_ID, DEFAULT_GRANITE_MODEL_ID, ModelProfileName
 
@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _parse_args(argv)
     dtype = _dtype(args.dtype)
+    validate_runtime_kv_cache_mode(args.kv_cache_mode, args.profile)
 
     model_id = _resolved_model_id(args.profile, args.model_id)
     patched_model = _load_patched_model(args.profile, model_id, dtype, args)
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         f"patched_{args.profile}_attention_layers={patched_model.patched_attention_layers}",
         file=sys.stderr,
     )
+    print(f"kv_cache_mode={args.kv_cache_mode}", file=sys.stderr)
 
     prompt = args.prompt
     if args.chat_template:
@@ -110,6 +112,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--disable-k-norm-factoring", action="store_true")
     parser.add_argument("--disable-hadamard", action="store_true")
     parser.add_argument("--disable-offline-v-hadamard", action="store_true")
+    parser.add_argument(
+        "--kv-cache-mode",
+        choices=("fake", "packed"),
+        default="fake",
+        help=(
+            "KV-cache storage mode. Current Granite/Gemma4 runtime supports only "
+            "fake quantize/dequantize; packed fails fast until implemented."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -250,6 +261,7 @@ def _oscar_config(args: argparse.Namespace) -> OscarKVConfig:
         k_norm_factoring=not args.disable_k_norm_factoring,
         use_hadamard=not args.disable_hadamard,
         offline_v_hadamard=not args.disable_offline_v_hadamard,
+        kv_cache_mode=args.kv_cache_mode,
     )
 
 
