@@ -214,9 +214,11 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
 
 def load_assets(profile: str, model_id: str, trust_remote_code: bool) -> Any:
     if profile == "gemma4-e2b":
-        from transformers import AutoProcessor
+        from transformers import AutoTokenizer
 
-        return AutoProcessor.from_pretrained(model_id, trust_remote_code=trust_remote_code)
+        # Text-only validation does not need Gemma4's image/video processors.
+        # Loading AutoProcessor pulls in torchvision through Gemma4VideoProcessor.
+        return AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
 
     from transformers import AutoTokenizer
 
