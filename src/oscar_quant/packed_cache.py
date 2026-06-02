@@ -151,6 +151,18 @@ class PackedOscarCache(_TransformersCache):
     def get_max_length(self) -> None:
         return None
 
+    def get_mask_sizes(self, cache_position: torch.Tensor | int, layer_idx: int) -> tuple[int, int]:
+        kv_length = self.get_seq_length(layer_idx)
+        if isinstance(cache_position, torch.Tensor) and cache_position.numel() > 0:
+            query_length = int(cache_position.shape[0] if cache_position.ndim == 1 else cache_position.shape[-1])
+        elif isinstance(cache_position, int):
+            query_length = cache_position
+        else:
+            query_length = 0
+        # During prefill, the cache is empty when masks are built, but keys will
+        # have the same length as the current query.
+        return max(kv_length, query_length), 0
+
     def crop(self, max_length: int) -> None:
         return None
 
