@@ -15,6 +15,10 @@ except Exception:  # pragma: no cover - transformers may be absent in lightweigh
 class PackedOscarCache(_TransformersCache):
     """Hybrid cache with packed main KV storage and fp residual/fallback tensors."""
 
+    @property
+    def is_compileable(self) -> bool:
+        return False
+
     def __init__(self, *, residual_evict_size: int = 128) -> None:
         self.residual_evict_size = residual_evict_size
         self.key_cache: list[torch.Tensor | None] = []
