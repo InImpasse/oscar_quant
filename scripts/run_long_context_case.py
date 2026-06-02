@@ -15,10 +15,11 @@ from typing import Any
 import torch
 
 from oscar_quant.config import OscarKVConfig, validate_runtime_kv_cache_mode
-from oscar_quant.gemma4_patch import apply_oscar_to_gemma4
+from oscar_quant.gemma4_patch import apply_oscar_to_gemma4, apply_packed_oscar_to_gemma4
 from oscar_quant.granite_patch import apply_oscar_to_granite
 from oscar_quant.kv_cache_utils import OSCAR_CACHE_SUMMARY_ATTR
 from oscar_quant.models import DEFAULT_GEMMA4_E2B_MODEL_ID, DEFAULT_GRANITE_MODEL_ID
+from oscar_quant.packed_cache import PackedOscarCache, new_packed_oscar_cache
 
 PROFILES = {
     "granite-4.0-1b-base": {
@@ -30,6 +31,7 @@ PROFILES = {
         "model_id": DEFAULT_GEMMA4_E2B_MODEL_ID,
         "auto_model": "image-text-to-text",
         "patch": apply_oscar_to_gemma4,
+        "packed_patch": apply_packed_oscar_to_gemma4,
     },
 }
 
@@ -147,6 +149,8 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.run_type == "oscar" and args.precision not in OSCAR_BITS:
         raise ValueError("OScaR runs in this script use int8/int4/int2 KV-cache precision.")
     validate_runtime_kv_cache_mode(args.kv_cache_mode, args.profile)
+    if args.kv_cache_mode == "packed" and args.precision not in {"int2", "int4"}:
+        raise ValueError("Packed KV cache mode currently supports only int2/int4.")
 
 
 def run_case(args: argparse.Namespace) -> dict[str, Any]:
@@ -159,6 +163,7 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
     model.eval()
 
     patched_layers = 0
+    packed_cache: PackedOscarCache | None = None
     if args.run_type == "oscar":
         bits = OSCAR_BITS[args.precision]
         kv_config = OscarKVConfig(
@@ -169,13 +174,21 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
             residual_length=args.residual_length,
             kv_cache_mode=args.kv_cache_mode,
         )
-        patched_layers = profile["patch"](model, kv_config)
+        if args.kv_cache_mode == "packed":
+            patched_layers = profile["packed_patch"](model, kv_config)
+            packed_cache = new_packed_oscar_cache(
+                residual_evict_size=max(args.residual_length, 256 if bits == 2 else 128)
+            )
+        else:
+            patched_layers = profile["patch"](model, kv_config)
 
     prompt = build_prompt(tokenizer, args.context_target)
     inputs = make_inputs(args.profile, assets, prompt)
     prompt_tokens = int(inputs["input_ids"].shape[-1])
     inputs = move_inputs_to_model(inputs, model)
     generation_kwargs = generation_kwargs_for(tokenizer, args.max_new_tokens)
+    if packed_cache is not None:
+        generation_kwargs["past_key_values"] = packed_cache
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -193,7 +206,7 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
     monitor.stop()
 
     generated_tokens = int(generated.shape[-1] - inputs["input_ids"].shape[-1])
-    kv_summary = oscar_cache_summary(model)
+    kv_summary = oscar_cache_summary(model, packed_cache)
     theoretical = theoretical_kv_gib(model, prompt_tokens + generated_tokens, args)
 
     return {
@@ -213,6 +226,7 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
         "kv_physical_changed_layers": kv_summary["changed_layers"],
         "kv_physical_tracked_layers": kv_summary["tracked_layers"],
         "kv_cache_storage_note": kv_summary["note"],
+        "extra_metadata": kv_summary.get("extra_metadata"),
         **theoretical,
     }
 
@@ -296,7 +310,24 @@ def generation_kwargs_for(tokenizer: Any, max_new_tokens: int) -> dict[str, Any]
     }
 
 
-def oscar_cache_summary(model: torch.nn.Module) -> dict[str, Any]:
+def oscar_cache_summary(model: torch.nn.Module, packed_cache: PackedOscarCache | None = None) -> dict[str, Any]:
+    if packed_cache is not None:
+        summary = packed_cache.storage_summary()
+        physical_gib = summary["physical_gib"]
+        return {
+            "before_gib": summary["estimated_full_precision_gib"],
+            "after_gib": physical_gib,
+            "compression_ratio": summary["physical_compression_ratio"],
+            "changed_layers": summary["packed_layers"],
+            "tracked_layers": summary["packed_layers"] + summary["fp_fallback_layers"],
+            "note": (
+                f"{summary['packed_layers']} layers use packed KV storage; "
+                f"{summary['fp_fallback_layers']} layers use fp fallback storage; "
+                f"observed physical KV compression ratio {summary['physical_compression_ratio']}x"
+            ),
+            "extra_metadata": {"cache_storage_summary": summary},
+        }
+
     summaries = [
         getattr(module, OSCAR_CACHE_SUMMARY_ATTR)
         for module in model.modules()

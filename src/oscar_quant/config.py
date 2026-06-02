@@ -76,8 +76,9 @@ def validate_runtime_kv_cache_mode(mode: KVCacheMode, profile: str) -> None:
     """Fail early when a requested KV-cache storage mode is not implemented."""
     if mode == "fake":
         return
+    if profile == "gemma4-e2b":
+        return
     raise NotImplementedError(
         f"Packed KV cache mode is not implemented for profile {profile!r} in this repo. "
-        "The current Granite/Gemma4 runtime path supports only fake quantize/dequantize. "
         "Use --kv-cache-mode fake, or add a model-family-specific packed cache implementation."
     )

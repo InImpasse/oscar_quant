@@ -381,9 +381,8 @@ oscar-baseline \
   --kv-cache-mode fake
 ```
 
-Current Granite/Gemma4 support is `fake` only. Passing `--kv-cache-mode packed`
-fails fast because this repo does not yet contain a model-family-specific packed
-KV cache implementation for Granite or Gemma4.
+Granite support is `fake` only. Gemma4-E2B also has an experimental packed path
+for `int2` and `int4` in the long-context validation runner.
 
 ## Remote Long-Context Validation
 
@@ -420,6 +419,7 @@ The default matrix runs:
 
 - Baseline: `bf16`, `fp16`
 - OScaR fake KV path: `int8`, `int4`, `int2`
+- OScaR packed KV path for Gemma4: `int4`, `int2`
 - Contexts: `1024`, `2048`, `8192`
 - New tokens: `32`
 
@@ -435,6 +435,24 @@ MAX_NEW_TOKENS=32 \
 RESULT_ROOT="results/a800_long_context" \
 ./scripts/run_long_context_matrix.sh
 ```
+
+Run the experimental Gemma4 packed path directly:
+
+```bash
+PYTHONPATH=src python scripts/run_long_context_case.py \
+  --profile gemma4-e2b \
+  --model-id checkpoints/gemma-4-E2B \
+  --run-type oscar \
+  --precision int2 \
+  --kv-cache-mode packed \
+  --context-target 8192 \
+  --max-new-tokens 32 \
+  --output-json results/long_context/raw/gemma4_e2b_oscar_int2_packed_8192_32.json
+```
+
+The packed Gemma4 path stores full-context source layers in OScaR packed
+`uint16` tensors plus fp residual windows. Sliding-window layers currently use
+the fp fallback path so their mask semantics stay correct.
 
 Run one case directly:
 
@@ -468,6 +486,10 @@ cache tensor storage is unchanged and `kv_physical_compression_ratio` to be
 `1.0`. That means the run simulated quantization error but did not physically
 pack the KV cache. The `kv_theoretical_*` fields are estimates for what a real
 packed path would target; they are not measured memory savings.
+
+For the Gemma4 packed path, check `extra_metadata.cache_storage_summary` and the
+CSV fields `cache_class`, `packed_layers`, `residual_layers`, and
+`fp_fallback_layers` to confirm which layers used packed storage.
 
 ## Important CLI Options
 
@@ -510,6 +532,7 @@ src/oscar_quant/
   kv_cache_utils.py  Shared OScaR/cache helper functions
   loader.py          High-level patched model loaders
   models.py          Shared Granite/Gemma model profiles
+  packed_cache.py    Experimental packed OScaR KV cache storage
   schemas.py         Pydantic benchmark result schemas
 
 scripts/

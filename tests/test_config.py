@@ -183,14 +183,46 @@ def test_kv_cache_utils_is_the_shared_helper_module():
     assert hasattr(kv_cache_utils, "OSCAR_CACHE_SUMMARY_ATTR")
 
 
+def test_packed_oscar_cache_reports_storage_summary():
+    """Verify packed cache summary exposes the fields used by result reporting."""
+    import torch
+
+    from oscar_quant.packed_cache import PackedOscarCache
+
+    cache = PackedOscarCache()
+    cache.update_pack(
+        torch.zeros((1, 1, 1, 4), dtype=torch.uint16),
+        torch.zeros((1, 1, 1, 4), dtype=torch.float32),
+        torch.zeros((1, 4, 1, 1), dtype=torch.uint16),
+        torch.zeros((1, 1, 1, 4), dtype=torch.float32),
+        0,
+    )
+    cache.update_residual(
+        torch.zeros((1, 1, 1, 4), dtype=torch.bfloat16),
+        torch.zeros((1, 1, 1, 4), dtype=torch.bfloat16),
+        0,
+    )
+
+    summary = cache.storage_summary()
+
+    assert summary["cache_class"] == "PackedOscarCache"
+    assert summary["packed_layers"] == 1
+    assert summary["residual_layers"] == 1
+    assert summary["physical_bytes"] > 0
+    assert summary["estimated_full_precision_bytes"] >= summary["physical_bytes"]
+    assert summary["physical_compression_ratio"] >= 1.0
+
+
 def test_packed_kv_cache_mode_fails_until_model_family_support_exists():
     """Verify packed mode is explicit instead of silently falling back to fake mode."""
     try:
         validate_runtime_kv_cache_mode("packed", "granite-4.0-1b-base")
     except NotImplementedError as exc:
-        assert "supports only fake" in str(exc)
+        assert "not implemented" in str(exc)
     else:
         raise AssertionError("Expected packed KV cache mode to fail fast")
+
+    validate_runtime_kv_cache_mode("packed", "gemma4-e2b")
 
 
 def test_quantized_artifact_report_lists_safetensor_files():

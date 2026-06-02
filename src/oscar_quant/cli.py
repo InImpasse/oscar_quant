@@ -40,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     dtype = _dtype(args.dtype)
     validate_runtime_kv_cache_mode(args.kv_cache_mode, args.profile)
+    if args.kv_cache_mode == "packed":
+        raise NotImplementedError(
+            "Packed KV cache mode is currently wired through "
+            "`scripts/run_long_context_case.py` for Gemma4 validation, not `oscar-generate`."
+        )
 
     model_id = _resolved_model_id(args.profile, args.model_id)
     patched_model = _load_patched_model(args.profile, model_id, dtype, args)

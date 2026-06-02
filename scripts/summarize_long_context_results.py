@@ -32,6 +32,12 @@ FIELDS = [
     "kv_physical_compression_ratio",
     "kv_physical_changed_layers",
     "kv_physical_tracked_layers",
+    "cache_class",
+    "packed_layers",
+    "residual_layers",
+    "fp_fallback_layers",
+    "estimated_full_precision_gib",
+    "physical_gib",
     "kv_cache_storage_note",
     "patched_attention_layers",
     "error",
@@ -58,6 +64,17 @@ def main() -> int:
 
 def read_row(path: Path) -> dict[str, Any]:
     row = json.loads(path.read_text(encoding="utf-8"))
+    cache_summary = (row.get("extra_metadata") or {}).get("cache_storage_summary") or {}
+    for key in (
+        "cache_class",
+        "packed_layers",
+        "residual_layers",
+        "fp_fallback_layers",
+        "estimated_full_precision_gib",
+        "physical_gib",
+    ):
+        if key in cache_summary:
+            row[key] = cache_summary[key]
     row.setdefault("error", "")
     return row
 
